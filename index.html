@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>橫向搖桿貪食蛇</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            background-color: #222;
+            color: white;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+            touch-action: none; /* 防止手機瀏覽器滑動與縮放 */
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        canvas {
+            background-color: #000;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+        }
+
+        /* UI 層：分數與搖桿 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 讓點擊穿透到需要的地方 */
+        }
+
+        #score {
+            position: absolute;
+            top: 15px;
+            left: 20px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px 40px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            pointer-events: auto;
+        }
+
+        #game-over button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            font-size: 18px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        /* 虛擬搖桿設定 (放在左下角) */
+        #joystick-zone {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 150px;
+            height: 150px;
+            pointer-events: auto;
+        }
+
+        #joystick-base {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+        }
+
+        #joystick-stick {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            transition: 0.1s transform ease-out; /* 回彈動畫 */
+        }
+
+        /* 強制橫屏提示 */
+        #landscape-warning {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: #111;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            text-align: center;
+            padding: 20px;
+        }
+
+        /* 利用 Media Query 偵測螢幕方向 */
+        @media screen and (orientation: landscape) {
+            #landscape-warning {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 豎屏時的警告畫面 -->
+    <div id="landscape-warning">
+        <p>🔄</p>
+        <p>請將手機打橫以開始遊戲</p>
+    </div>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer">
+            <div id="score">分數: 0</div>
+            
+            <div id="game-over">
+                <h2>遊戲結束!</h2>
+                <p id="final-score">得分: 0</p>
+                <button onclick="resetGame()">重新開始</button>
+            </div>
+
+            <!-- 搖桿區域 -->
+            <div id="joystick-zone">
+                <div id="joystick-base">
+                    <div id="joystick-stick"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gameOverMenu = document.getElementById('game-over');
+        const finalScoreElement = document.getElementById('final-score');
+
+        // 遊戲變數
+        let snake = [];
+        let food = {};
+        let gridSize = 20;
+        let cols, rows;
+        let dx = 1, dy = 0; // 移動方向
+        let nextDx = 1, nextDy = 0; // 緩存下一步，防止快速反向自殺
+        let score = 0;
+        let gameInterval;
+        let isGameOver = false;
+        const speed = 120; // 毫秒/步
+
+        // 調整畫布大小 (適應螢幕)
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            cols = Math.floor(canvas.width / gridSize);
+            rows = Math.floor(canvas.height / gridSize);
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function spawnFood() {
+            food = {
+                x: Math.floor(Math.random() * cols),
+                y: Math.floor(Math.random() * rows)
+            };
+            // 確保食物不會生在蛇身上
+            for (let part of snake) {
+                if (part.x === food.x && part.y === food.y) {
+                    spawnFood();
+                    break;
+                }
+            }
+        }
+
+        function resetGame() {
+            snake = [
+                {x: Math.floor(cols/2), y: Math.floor(rows/2)},
+                {x: Math.floor(cols/2) - 1, y: Math.floor(rows/2)},
+                {x: Math.floor(cols/2) - 2, y: Math.floor(rows/2)}
+            ];
+            dx = 1; dy = 0;
+            nextDx = 1; nextDy = 0;
+            score = 0;
+            scoreElement.innerText = "分數: " + score;
+            isGameOver = false;
+            gameOverMenu.style.display = 'none';
+            spawnFood();
+            
+            clearInterval(gameInterval);
+            gameInterval = setInterval(gameLoop, speed);
+        }
+
+        function drawRect(x, y, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x * gridSize, y * gridSize, gridSize - 1, gridSize - 1);
+        }
+
+        function gameLoop() {
+            if (isGameOver) return;
+
+            // 更新方向
+            dx = nextDx;
+            dy = nextDy;
+
+            // 計算新頭部位置
+            let head = { x: snake[0].x + dx, y: snake[0].y + dy };
+
+            // 穿牆機制 (如果不想要穿牆，改成撞牆死掉即可)
+            if (head.x < 0) head.x = cols - 1;
+            if (head.x >= cols) head.x = 0;
+            if (head.y < 0) head.y = rows - 1;
+            if (head.y >= rows) head.y = 0;
+
+            // 撞到自己
+            for (let part of snake) {
+                if (part.x === head.x && part.y === head.y) {
+                    endGame();
+                    return;
+                }
+            }
+
+            snake.unshift(head);
+
+            // 吃到食物
+            if (head.x === food.x && head.y === food.y) {
+                score += 10;
+                scoreElement.innerText = "分數: " + score;
+                spawnFood();
+            } else {
+                snake.pop(); // 沒吃到就移除尾巴
+            }
+
+            // 繪製畫面
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 畫食物
+            drawRect(food.x, food.y, '#FF3366');
+            
+            // 畫蛇
+            snake.forEach((part, index) => {
+                let color = index === 0 ? '#4CAF50' : '#81C784';
+                drawRect(part.x, part.y, color);
+            });
+        }
+
+        function endGame() {
+            isGameOver = true;
+            clearInterval(gameInterval);
+            finalScoreElement.innerText = "得分: " + score;
+            gameOverMenu.style.display = 'block';
+        }
+
+        // ================= 虛擬搖桿邏輯 =================
+        const joystickZone = document.getElementById('joystick-zone');
+        const stick = document.getElementById('joystick-stick');
+        let stickX = 0, stickY = 0;
+        const maxRadius = 35; // 搖桿最大移動半徑
+
+        joystickZone.addEventListener('touchstart', handleJoystickStart, {passive: false});
+        joystickZone.addEventListener('touchmove', handleJoystickMove, {passive: false});
+        joystickZone.addEventListener('touchend', handleJoystickEnd);
+
+        let joystickCenter = {x: 0, y: 0};
+
+        function handleJoystickStart(e) {
+            e.preventDefault();
+            const rect = document.getElementById('joystick-base').getBoundingClientRect();
+            joystickCenter.x = rect.left + rect.width / 2;
+            joystickCenter.y = rect.top + rect.height / 2;
+            stick.style.transition = 'none'; // 移除動畫，跟隨手指
+            handleJoystickMove(e);
+        }
+
+        function handleJoystickMove(e) {
+            e.preventDefault();
+            const touch = e.targetTouches[0];
+            let deltaX = touch.clientX - joystickCenter.x;
+            let deltaY = touch.clientY - joystickCenter.y;
+            
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            
+            // 限制在圓圈內
+            if (distance > maxRadius) {
+                deltaX = (deltaX / distance) * maxRadius;
+                deltaY = (deltaY / distance) * maxRadius;
+            }
+
+            stick.style.transform = `translate(calc(-50% + ${deltaX}px), calc(-50% + ${deltaY}px))`;
+
+            // 計算方向 (判斷X跟Y哪個偏移多)
+            if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                // 水平移動
+                if (deltaX > 10 && dx !== -1) { nextDx = 1; nextDy = 0; } // 右
+                else if (deltaX < -10 && dx !== 1) { nextDx = -1; nextDy = 0; } // 左
+            } else {
+                // 垂直移動
+                if (deltaY > 10 && dy !== -1) { nextDx = 0; nextDy = 1; } // 下
+                else if (deltaY < -10 && dy !== 1) { nextDx = 0; nextDy = -1; } // 上
+            }
+        }
+
+        function handleJoystickEnd(e) {
+            // 放開搖桿時回到中心
+            stick.style.transition = '0.1s transform ease-out';
+            stick.style.transform = `translate(-50%, -50%)`;
+        }
+
+        // 初始化開始遊戲
+        resetGame();
+
+    </script>
+</body>
+</html>
